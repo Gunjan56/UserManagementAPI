@@ -26,7 +26,3 @@ def create_app():
     jwt = JWTManager(app)
     socketio = SocketIO(app)
     return app, socketio
-
-if __name__ == '__main__':
-    app = create_app()
-    app.run(debug=True, host='localhost', port=5000)
