@@ -1,11 +1,16 @@
 from flask_socketio import SocketIO
-from flask import Flask
+from flask import Flask, app
 from flask_jwt_extended import JWTManager
 from flask_migrate import Migrate
 from models.model import db
 import os
 from dotenv import load_dotenv, dotenv_values
 load_dotenv()
+
+def allowed_file(filename):
+    return '.' in filename and \
+        filename.rsplit('.', 1)[1].lower() in app.config['ALLOWED_EXTENSIONS']
+
 
 def create_app():
     app = Flask(__name__)

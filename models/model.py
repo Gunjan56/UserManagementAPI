@@ -15,7 +15,6 @@ class User(UserMixin, db.Model):
     following = db.relationship(
         'Follow',
         foreign_keys='Follow.follower_id',
-        backref=db.backref('follower', lazy=True),
         lazy=True,
         cascade='all, delete-orphan'
     )
@@ -23,11 +22,9 @@ class User(UserMixin, db.Model):
     followers = db.relationship(
         'Follow',
         foreign_keys='Follow.followed_id',
-        backref=db.backref('followed', lazy=True),
         lazy=True,
         cascade='all, delete-orphan'
     )
-    like = db.relationship('Liked_Post', foreign_keys='Liked_Post.user_id',ackref=db.backref(''))
     def follow(self, user):
         if not self.is_following(user):
             follow = Follow(follower=self, followed=user)
@@ -47,8 +44,8 @@ class User(UserMixin, db.Model):
     def count_followers(self):
         return len(self.followers)
     
-    def count_likes(self):
-        return len(self.like)
+    def count_likes_received(self):
+        return sum(post.count_likes() for post in self.posts)
 
 class Role(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -65,10 +62,12 @@ class Post(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     content = db.Column(db.Text, nullable=False)
     image = db.Column(db.String(255), nullable=True)
-    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id'))
     likes = db.relationship('Liked_Post', backref='post', lazy=True, cascade='all, delete-orphan')
     comments = db.relationship('Comment', backref='post', lazy=True, cascade='all, delete-orphan')
     
+    def count_likes(self):
+        return len(self.likes)
     def to_json(self):
         return {
             'id': self.id,
@@ -94,6 +93,7 @@ class Liked_Post(db.Model):
     user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
     post_id = db.Column(db.Integer, db.ForeignKey('post.id'), nullable=False)
     is_like = db.Column(db.Boolean, default=False)
+
 
     def to_json(self):
         return {

@@ -3,27 +3,24 @@ import os
 import re
 from flask_mail import Message, Mail
 import base64 
-from flask import request, jsonify, abort, send_from_directory, g
-from flask_jwt_extended import create_access_token, get_jwt_identity, jwt_required
-from flask_socketio import emit,send
-from werkzeug.security import check_password_hash, generate_password_hash
-from werkzeug.utils import secure_filename
-from models.model import db, User, Post, Message, Liked_Post, Comment, Follow, Role, Permission
-from utils import create_app
+from flask import (request,jsonify, abort, send_from_directory, g)
+from flask_jwt_extended import (create_access_token, get_jwt_identity, jwt_required)
+from flask_socketio import (emit, send)
+from werkzeug.security import (check_password_hash, generate_password_hash)
+from werkzeug.utils import (secure_filename)
+from models.model import (db, User, Post, Message, Liked_Post, Comment, Follow, Role, Permission)
+from utils import create_app,allowed_file
+from helper import ROLES_PERMISSIONS
+from handlers import (bad_request, forbidden, unauthorized, not_found)
 
 app, socketio = create_app()
 mail = Mail(app)
 email_validation = r'^[a-zA-Z0-9+_.-]+@[a-zA-Z0-9.-]+$'
 
-ROLES_PERMISSIONS = {
-    'user': ['create_post', 'edit_own_post', 'delete_own_post'],
-    'moderator': ['delete_any_post'],
-    'administrator': ['delete_any_post', 'delete_user']
-}
-
-def allowed_file(filename):
-    return '.' in filename and \
-        filename.rsplit('.', 1)[1].lower() in app.config['ALLOWED_EXTENSIONS']
+app.errorhandler(400)(bad_request)
+app.errorhandler(401)(unauthorized)
+app.errorhandler(403)(forbidden)
+app.errorhandler(404)(not_found)
 
 def secure_password(password):
     return generate_password_hash(password)    
@@ -174,12 +171,13 @@ def manage_profile():
             'followers': followers_count,
             'following': following_count
         }), 200
-
+  
     elif request.method == 'PUT':
         data = request.json
 
         user.username = data.get('username', user.username)
         user.email = data.get('email', user.email)
+        user.role = data.get('role', user.role);
 
         if 'profile_picture' in request.files:
             profile_picture = request.files['profile_picture']
@@ -281,8 +279,7 @@ def manage_post(post_id):
     elif request.method == 'PUT':
         data = request.json
 
-        post.content = data.get('content', post.content)
-
+        content = data.get('content', post.content)
         db.session.commit()
 
         return jsonify({'message': 'Post updated successfully'}), 200
@@ -290,19 +287,19 @@ def manage_post(post_id):
 
 @app.route('/posts/<int:post_id>', methods=['DELETE'])
 @jwt_required()
-@roles_required('moderator', 'administrator')
 def delete_post(post_id):
+    current_user_id = get_jwt_identity()
     post = Post.query.get(post_id)
     if not post:
         abort(404, 'Post not found')
+    user = User.query.get(current_user_id)
+    if not user:
+        abort(404, 'User not found')
 
-    if 'delete_any_post' in ROLES_PERMISSIONS[g.user.role] or post.user_id == g.user.id:
-        db.session.delete(post)
-        db.session.commit()
-        return jsonify({'message': 'Post deleted successfully'}), 200
-    else:
-        abort(403, 'You are not authorized to delete this post')
-
+    db.session.delete(post)
+    db.session.commit()
+    return jsonify({'message': 'Post deleted successfully'}), 200
+    
 
 @app.route('/follow/<int:user_id>', methods=['POST'])
 @jwt_required()
@@ -317,14 +314,12 @@ def follow(user_id):
     if current_user.id == target_user.id:
         abort(400, 'Cannot follow yourself')
 
-    if target_user in current_user:
-        return jsonify({"message": "You are already following"})
 
     follow = Follow(
         follower_id=current_user.id,
         followed_id=user_id
     )
-
+    
     db.session.add(follow)
     db.session.commit()
 
@@ -369,31 +364,7 @@ def like_post(post_id):
     )
     db.session.add(like)
     db.session.commit()
-
     return jsonify({'message': 'post liked'}), 200
-
-@app.route('/posts/<int:post_id>/unlike', methods=['POST'])
-@jwt_required()
-def unlike_post(post_id):
-    current_user_id = get_jwt_identity()
-    current_user = User.query.get(current_user_id)
-    post = Post.query.get(post_id)
-
-    if not current_user or not post:
-        abort(404, 'User or Post not found')
-
-    like = Liked_Post.query.filter_by(
-        user_id=current_user.id,
-        post_id=post.id
-    ).first()
-
-    if not like:
-        abort(404, 'You have not liked this post')
-
-    db.session.delete(like)
-    db.session.commit()
-
-    return jsonify({'message': 'Unliked post'}), 200
 
 @app.route('/posts/<int:post_id>/comments', methods=['POST'])
 @jwt_required()
@@ -451,31 +422,30 @@ def delete_comment(post_id, comment_id):
 def uploaded_file(filename):
     return send_from_directory(app.config['UPLOAD_FOLDER'], filename)
 
-@app.route('/posts', methods=['GET'])
+@app.route('/get_posts', methods=['GET'])
 @jwt_required()
 def get_posts():
-    posts = Post.query.all()
-
-    response = []
-    for post in posts:
-        post_data = {
-            "id": post.id,
-            "content": post.content,
-            "image": post.image,
-            "user_id": post.user_id,
-            "likes": [like.to_json() for like in post.likes],
-            "comments": [comment.to_json() for comment in post.comments]
-        }
-        response.append(post_data)
-
     current_user_id = get_jwt_identity()
     user = User.query.get(current_user_id)
+    posts = Post.query.all()
+    post_data = []
+    for post in posts:
+        post_dict = {
+            'id': post.id,
+            'content': post.content,
+            'image': post.image,
+            'user_id': post.user_id,
+            'likes': post.count_likes(),  
+            'comments': ([comment.to_json() for comment in post.comments])
+        }
+        post_data.append(post_dict)
     if user:
-        followers_count = len(user.followers)
-        following_count = len(user.following)
-        response.append({"followers_count": followers_count, "following_count": following_count})
+        followers_count = len(user.following)
+        following_count = len(user.followers)
+        likes_received = user.count_likes_received()
+        post_data.append({"followers_count": followers_count, "following_count": following_count, "likes_received": likes_received})
 
-    return jsonify(response), 200
+    return jsonify(post_data), 200
 
 @app.route('/send_message/<int:recipient_id>', methods=['POST'])
 @jwt_required()
@@ -497,15 +467,24 @@ def send_message(recipient_id):
         sender_id=current_user_id,
         recipient_id=recipient_id,
         content=content
+
     )
 
     db.session.add(message)
     db.session.commit()
-
-    socketio.emit('new_message', {'sender_id': current_user_id}, room=f'user_{recipient_id}')
-
+ 
+    socketio.emit('new_message', {'sender_id': current_user_id, "content": content}, room=f'user_{recipient_id}')
     return jsonify({'message': 'Message sent successfully'}), 201
 
+@socketio.on('new_message')
+def handle_new_message(data):
+    sender_id = data['sender_id']
+    recipient_id = data['recipient_id']
+    send_message(sender_id, recipient_id, data['content'])
+
+def send_message(sender_id, recipient_id, content):
+    emit('message', {'sender_id': sender_id, 'content': content}, room=f'user_{recipient_id}')
+    
 @app.route('/messages', methods=['GET'])
 @jwt_required()
 def get_messages():
@@ -537,15 +516,7 @@ def delete_message(message_id):
 
     db.session.delete(message)
     db.session.commit()
-
     return jsonify({'message': 'Message deleted successfully'}), 200
-
-@socketio.on('connect')
-def handle_connect(json):
-    current_user_id = get_jwt_identity()
-    if current_user_id:
-        emit(f'user_{current_user_id}', json, namespace='/chat')
-        send(send_message)
 
 
 @app.route('/search', methods=['GET'])
@@ -581,24 +552,6 @@ def search():
             abort(400, 'Invalid sort_by parameter')
 
     return jsonify({'results': search_results}), 200
-
-
-@app.errorhandler(400)
-def bad_request(error):
-    return jsonify({'error': 'Bad Request'}), 400
-
-@app.errorhandler(401)
-def unauthorized(error):
-    return jsonify({'error': 'Unauthorized'}), 401
-
-@app.errorhandler(403)
-def forbidden(error):
-    print(error)
-    return jsonify({'error': 'Forbidden'}, ), 403
-
-@app.errorhandler(404)
-def not_found(error):
-    return jsonify({'error': 'Not Found'}), 404
 
 if __name__ == '__main__':
     socketio.run(app,debug=True, host='localhost', port=5000)
